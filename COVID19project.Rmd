@@ -1,0 +1,398 @@
+---
+title: "Covid19_Project"
+author: "B Blankstein"
+date: "2026-08-17"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(MASS)
+library(tidyverse)
+library(zoo)
+```
+
+# Import Data
+
+```{r}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names <- c(
+  "time_series_covid19_confirmed_US.csv",
+  "time_series_covid19_confirmed_global.csv",
+  "time_series_covid19_deaths_US.csv",
+  "time_series_covid19_deaths_global.csv"
+)
+
+urls <- str_c(url_in, file_names)
+
+confirmed_us <- read_csv(urls[1], show_col_types = FALSE)
+confirmed_global <- read_csv(urls[2], show_col_types = FALSE)
+deaths_us <- read_csv(urls[3], show_col_types = FALSE)
+deaths_global <- read_csv(urls[4], show_col_types = FALSE)
+```
+
+# Tidy U.S. Data
+
+```{r}
+confirmed_us_tidy <- confirmed_us %>%
+  pivot_longer(
+    cols = matches("^\\d+/\\d+/\\d+$"),
+    names_to = "date",
+    values_to = "cases"
+  ) %>%
+  mutate(
+    date = as.Date(date, format = "%m/%d/%y")
+  ) %>%
+  dplyr::select(
+    UID,
+    FIPS,
+    Admin2,
+    Province_State,
+    Country_Region,
+    Combined_Key,
+    date,
+    cases
+  )
+
+deaths_us_tidy <- deaths_us %>%
+  pivot_longer(
+    cols = matches("^\\d+/\\d+/\\d+$"),
+    names_to = "date",
+    values_to = "deaths"
+  ) %>%
+  mutate(
+    date = as.Date(date, format = "%m/%d/%y")
+  ) %>%
+  dplyr::select(
+    UID,
+    FIPS,
+    Admin2,
+    Province_State,
+    Country_Region,
+    Combined_Key,
+    Population,
+    date,
+    deaths
+  )
+```
+
+# Join U.S. Cases and Deaths
+
+```{r}
+us_covid <- confirmed_us_tidy %>%
+  left_join(
+    deaths_us_tidy %>%
+      dplyr::select(
+        UID,
+        date,
+        Population,
+        deaths
+      ),
+    by = c("UID", "date")
+  )
+```
+
+# Aggregate to State Level
+
+```{r}
+us_clean <- us_covid %>%
+  group_by(Province_State, date) %>%
+  summarise(
+    cases = sum(cases, na.rm = TRUE),
+    deaths = sum(deaths, na.rm = TRUE),
+    population = sum(Population, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  rename(
+    state = Province_State
+  ) %>%
+  filter(
+    state %in% c(state.name, "District of Columbia")
+  )
+```
+
+# Create Daily Case and Death Counts
+
+```{r}
+us_clean <- us_clean %>%
+  arrange(state, date) %>%
+  group_by(state) %>%
+  mutate(
+    new_cases = cases - lag(cases),
+    new_deaths = deaths - lag(deaths)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    new_cases = replace_na(new_cases, 0),
+    new_deaths = replace_na(new_deaths, 0),
+    new_cases_clean = if_else(
+      new_cases < 0,
+      NA_real_,
+      new_cases
+    ),
+    new_deaths_clean = if_else(
+      new_deaths < 0,
+      NA_real_,
+      new_deaths
+    )
+  )
+```
+
+# Tidy Global Data
+
+```{r}
+confirmed_global_tidy <- confirmed_global %>%
+  pivot_longer(
+    cols = matches("^\\d+/\\d+/\\d+$"),
+    names_to = "date",
+    values_to = "cases"
+  ) %>%
+  mutate(
+    date = as.Date(date, format = "%m/%d/%y")
+  ) %>%
+  dplyr::select(
+    `Province/State`,
+    `Country/Region`,
+    date,
+    cases
+  )
+
+deaths_global_tidy <- deaths_global %>%
+  pivot_longer(
+    cols = matches("^\\d+/\\d+/\\d+$"),
+    names_to = "date",
+    values_to = "deaths"
+  ) %>%
+  mutate(
+    date = as.Date(date, format = "%m/%d/%y")
+  ) %>%
+  dplyr::select(
+    `Province/State`,
+    `Country/Region`,
+    date,
+    deaths
+  )
+```
+
+# Join and Clean Global Data
+
+```{r}
+global_covid <- confirmed_global_tidy %>%
+  left_join(
+    deaths_global_tidy,
+    by = c(
+      "Province/State",
+      "Country/Region",
+      "date"
+    )
+  )
+
+global_clean <- global_covid %>%
+  rename(
+    province_state = `Province/State`,
+    country_region = `Country/Region`
+  ) %>%
+  group_by(country_region, date) %>%
+  summarise(
+    cases = sum(cases, na.rm = TRUE),
+    deaths = sum(deaths, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+# Data Summary
+
+```{r}
+us_summary <- us_clean %>%
+  summarise(
+    number_of_states = n_distinct(state),
+    earliest_date = min(date),
+    latest_date = max(date),
+    total_rows = n(),
+    missing_daily_cases = sum(
+      is.na(new_cases_clean)
+    ),
+    missing_daily_deaths = sum(
+      is.na(new_deaths_clean)
+    )
+  )
+
+us_summary
+```
+
+# Visualization 1: U.S. COVID-19 Cases Over Time
+
+```{r}
+us_daily <- us_clean %>%
+  group_by(date) %>%
+  summarise(
+    new_cases = sum(
+      new_cases_clean,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  arrange(date) %>%
+  mutate(
+    cases_7day_avg = zoo::rollmean(
+      new_cases,
+      k = 7,
+      fill = NA,
+      align = "right"
+    )
+  )
+
+ggplot(
+  us_daily,
+  aes(
+    x = date,
+    y = cases_7day_avg
+  )
+) +
+  geom_line() +
+  labs(
+    title = "Daily COVID-19 Cases in the United States",
+    subtitle = "7-Day Moving Average",
+    x = "Date",
+    y = "New Cases"
+  ) +
+  theme_minimal()
+```
+
+The first visualization shows how reported COVID-19 cases changed over time in the United States. A seven-day moving average was used to reduce daily reporting fluctuations and make the major waves of infection easier to see.
+
+# Visualization 2: State COVID-19 Death Rates
+
+```{r}
+state_death_rates <- us_clean %>%
+  group_by(state) %>%
+  filter(
+    date == max(date)
+  ) %>%
+  mutate(
+    deaths_per_100k =
+      (deaths / population) * 100000
+  ) %>%
+  ungroup()
+
+state_death_rates %>%
+  slice_max(
+    deaths_per_100k,
+    n = 10
+  ) %>%
+  ggplot(
+    aes(
+      x = reorder(
+        state,
+        deaths_per_100k
+      ),
+      y = deaths_per_100k
+    )
+  ) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Top 10 States by COVID-19 Death Rate",
+    subtitle = "Cumulative deaths per 100,000 residents through March 9, 2023",
+    x = "State",
+    y = "Deaths per 100,000 Residents"
+  ) +
+  theme_minimal()
+```
+
+The second visualization compares the ten states with the highest cumulative COVID-19 death rates. Deaths are shown per 100,000 residents so that states with different population sizes can be compared more meaningfully.
+
+# Poisson Regression
+
+```{r}
+national_daily <- us_clean %>%
+  group_by(date) %>%
+  summarise(
+    new_cases = sum(
+      new_cases_clean,
+      na.rm = TRUE
+    ),
+    new_deaths = sum(
+      new_deaths_clean,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  arrange(date) %>%
+  mutate(
+    cases_14day_lag =
+      lag(new_cases, 14)
+  )
+
+national_model <- national_daily %>%
+  filter(
+    !is.na(cases_14day_lag)
+  )
+
+poisson_model <- glm(
+  new_deaths ~ cases_14day_lag,
+  family = poisson(
+    link = "log"
+  ),
+  data = national_model
+)
+
+summary(poisson_model)
+```
+
+A Poisson regression was initially used to examine whether the number of reported COVID-19 cases was associated with the number of reported deaths 14 days later.
+
+# Check for Overdispersion
+
+```{r}
+dispersion <-
+  deviance(poisson_model) /
+  df.residual(poisson_model)
+
+dispersion
+```
+
+The dispersion statistic is approximately 640, which indicates substantial overdispersion. This means that the variability in daily deaths is much greater than assumed by a standard Poisson model.
+
+# Negative Binomial Regression
+
+```{r}
+nb_model <- MASS::glm.nb(
+  new_deaths ~ cases_14day_lag,
+  data = national_model
+)
+
+summary(nb_model)
+
+AIC(
+  poisson_model,
+  nb_model
+)
+```
+
+Because the Poisson model showed substantial overdispersion, a negative binomial regression was used. The negative binomial model had a substantially lower AIC than the Poisson model, indicating a better fit to the data.
+
+# Model Interpretation
+
+```{r}
+exp(
+  coef(nb_model)["cases_14day_lag"] *
+    10000
+)
+```
+
+The result is approximately 1.053. Therefore, an increase of 10,000 reported COVID-19 cases was associated with approximately a 5.3% increase in the expected number of reported deaths 14 days later.
+
+# Bias and Limitations
+
+Several potential sources of bias should be considered when interpreting this project. The dataset represents reported COVID-19 cases rather than all infections. Testing availability and testing behavior changed throughout the pandemic, and many infections may never have been reported. Reporting practices also differed across locations and over time, which may introduce systematic differences into the observed case and death counts.
+
+Data revisions are another limitation I see. When cumulative counts were converted to daily counts, 123 negative case observations and 319 negative death observations were identified. These values likely reflect corrections to previously reported totals rather than actual negative events. They were treated as missing in the daily-count analysis, but this decision may still influence the results.
+
+The regression analysis also involves several simplifying assumptions. A 14-day lag was selected to examine the relationship between reported cases and subsequent deaths, but the time between infection, diagnosis, and death varies among individuals and across reporting systems. The model also does not control for potentially important factors such as age, vaccination, healthcare access, COVID-19 variants, treatments, or changes in population immunity. The relationship between reported cases and deaths therefore may have changed substantially during the 2020–2023 study period.
+
+Finally, observations across consecutive days are not completely independent because COVID-19 cases and deaths occur in waves and are correlated over time. For these reasons, the regression results should be interpreted as evidence of an association between reported cases and subsequent reported deaths, rather than a causal relationship. Similarly, differences in state death rates should not be interpreted as evidence that any particular state characteristic caused higher mortality.
