@@ -1,0 +1,188 @@
+---
+title: "NYPD Shooting Data"
+author: "B Blankstein"
+date: "2026-08-18"
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+# Import Data
+
+```{r}
+url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+shootings <- read_csv(url)
+```
+
+# Clean Data
+
+```{r}
+shootings <- shootings %>%
+  mutate(
+    OCCUR_DATE = as.Date(OCCUR_DATE, format = "%m/%d/%Y"),
+    BORO = as.factor(BORO),
+    STATISTICAL_MURDER_FLAG = as.factor(STATISTICAL_MURDER_FLAG),
+    PERP_AGE_GROUP = as.factor(PERP_AGE_GROUP),
+    PERP_SEX = as.factor(PERP_SEX),
+    PERP_RACE = as.factor(PERP_RACE),
+    VIC_AGE_GROUP = as.factor(VIC_AGE_GROUP),
+    VIC_SEX = as.factor(VIC_SEX),
+    VIC_RACE = as.factor(VIC_RACE)
+  )
+
+shootings_clean <- shootings %>%
+  select(
+    INCIDENT_KEY,
+    OCCUR_DATE,
+    OCCUR_TIME,
+    BORO,
+    PRECINCT,
+    LOCATION_DESC,
+    STATISTICAL_MURDER_FLAG,
+    PERP_AGE_GROUP,
+    PERP_SEX,
+    PERP_RACE,
+    VIC_AGE_GROUP,
+    VIC_SEX,
+    VIC_RACE,
+    Latitude,
+    Longitude
+  )
+```
+
+# Clean Unknown Values
+
+```{r}
+shootings_clean <- shootings_clean %>%
+  mutate(
+    PERP_RACE = as.character(PERP_RACE),
+    PERP_RACE = if_else(
+      is.na(PERP_RACE) | PERP_RACE == "UNKNOWN" | PERP_RACE == "(null)",
+      "Unknown",
+      PERP_RACE
+    ),
+
+    PERP_SEX = as.character(PERP_SEX),
+    PERP_SEX = if_else(
+      is.na(PERP_SEX) | PERP_SEX == "(null)" | PERP_SEX == "U",
+      "Unknown",
+      PERP_SEX
+    ),
+
+    PERP_AGE_GROUP = as.character(PERP_AGE_GROUP),
+    PERP_AGE_GROUP = if_else(
+      is.na(PERP_AGE_GROUP) |
+        PERP_AGE_GROUP %in% c(
+          "UNKNOWN", "(null)", "1020",
+          "1028", "2021", "224", "940"
+        ),
+      "Unknown",
+      PERP_AGE_GROUP
+    ),
+
+    VIC_AGE_GROUP = as.character(VIC_AGE_GROUP),
+    VIC_AGE_GROUP = if_else(
+      VIC_AGE_GROUP == "UNKNOWN",
+      "Unknown",
+      VIC_AGE_GROUP
+    ),
+
+    VIC_SEX = as.character(VIC_SEX),
+    VIC_SEX = if_else(
+      VIC_SEX == "U",
+      "Unknown",
+      VIC_SEX
+    ),
+
+    VIC_RACE = as.character(VIC_RACE),
+    VIC_RACE = if_else(
+      VIC_RACE == "UNKNOWN",
+      "Unknown",
+      VIC_RACE
+    )
+  )
+```
+
+# Data Summary
+
+```{r}
+summary_results <- shootings_clean %>%
+  summarise(
+    total_incidents = n(),
+    earliest_date = min(OCCUR_DATE),
+    latest_date = max(OCCUR_DATE),
+    number_of_boroughs = n_distinct(BORO),
+    fatal_incidents = sum(STATISTICAL_MURDER_FLAG == TRUE),
+    nonfatal_incidents = sum(STATISTICAL_MURDER_FLAG == FALSE),
+    unknown_perp_age = sum(PERP_AGE_GROUP == "Unknown"),
+    unknown_perp_sex = sum(PERP_SEX == "Unknown"),
+    unknown_perp_race = sum(PERP_RACE == "Unknown")
+  )
+
+print(summary_results, width = Inf)
+```
+
+# Visualization 1
+
+```{r}
+shootings_clean %>%
+  mutate(year = format(OCCUR_DATE, "%Y")) %>%
+  count(year) %>%
+  ggplot(aes(x = year, y = n, group = 1)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  labs(
+    title = "NYPD Shooting Incidents by Year",
+    x = "Year",
+    y = "Number of Shooting Incidents"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# Visualization 2
+
+```{r}
+shootings_clean %>%
+  count(BORO, sort = TRUE) %>%
+  ggplot(aes(x = reorder(BORO, n), y = n)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "NYPD Shooting Incidents by Borough",
+    x = "Borough",
+    y = "Number of Shooting Incidents"
+  ) +
+  theme_minimal()
+```
+
+# Logistic Regression Model
+
+```{r}
+fatal_model <- glm(
+  STATISTICAL_MURDER_FLAG ~ BORO,
+  data = shootings_clean,
+  family = binomial
+)
+
+summary(fatal_model)
+
+exp(coef(fatal_model))
+
+null_model <- glm(
+  STATISTICAL_MURDER_FLAG ~ 1,
+  data = shootings_clean,
+  family = binomial
+)
+
+anova(null_model, fatal_model, test = "Chisq")
+```
+
+
+
+In order to discuss the bias that may exist in this dataset.   I would first dicuss the perpetrator information.  We have 14,125 incidents where the perpetrator age is unknown.  This will affect the bias.   When we look at the raw counts vs the population, We don't fully analyze the boroughs to show bring into detail the areas with higher populations can have more incidents without that meaning a resident has greater individual risk.   Because we have only the reported incidents.  We could have lots of data points that were never reported.  
+We have some visualization that reveal patterns around recorded shootings.  But they can't determine why these patterns occurded.  We are not getting any causal relationship in anything we have.  
